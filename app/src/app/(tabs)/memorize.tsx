@@ -31,6 +31,7 @@ import {
 } from 'react-native';
 
 import {
+  AlertCircleIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -84,7 +85,10 @@ const FOLLOW_ALONG_RECORDING: RecordingOptions = {
   },
 };
 
-const PARTIAL_POLL_MS = 3000;
+// CPU reality: every partial poll is a full Whisper pass on the server.
+// Poll gently so the FINAL analysis isn't starved by live previews.
+const PARTIAL_POLL_MS = 5000;
+const PARTIAL_FIRST_MS = 4000;
 
 export default function MemorizeScreen() {
   const { palette, isDark } = useHujraTheme();
@@ -94,6 +98,7 @@ export default function MemorizeScreen() {
   const [ayah, setAyah] = useState(1);
   const resumedRef = useRef(false);
   const touchedRef = useRef(false);
+  const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [verseWords, setVerseWords] = useState<string[]>([]);
   const [translation, setTranslation] = useState<string | null>(null);
   const [verseError, setVerseError] = useState<string | null>(null);
@@ -193,6 +198,28 @@ export default function MemorizeScreen() {
     [verseWords],
   );
 
+  const resetAyah = useCallback((nextAyah: number, nextSurah?: number) => {
+    if (advanceTimer.current) clearTimeout(advanceTimer.current);
+    touchedRef.current = true;
+    if (nextSurah) setSurahNo(nextSurah);
+    setAyah(nextAyah);
+  }, []);
+
+  const completeSurah = useCallback(async () => {
+    setCelebrateOpen(true);
+    postComplete(surahNo, surah.ayahCount)
+      .then(() => refresh())
+      .catch(() => {}); // celebration first; persistence retries on next sync
+    try {
+      // Recording audio mode can mute playback on iOS; switch back first.
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      chime.seekTo(0);
+      chime.play();
+    } catch {
+      // the celebration must never crash over a sound
+    }
+  }, [chime, surahNo, surah.ayahCount, refresh]);
+
   // ---- recording ----------------------------------------------------------
   const startRecording = useCallback(async () => {
     const perm = await AudioModule.requestRecordingPermissionsAsync();
@@ -200,6 +227,7 @@ export default function MemorizeScreen() {
       Alert.alert('Microphone needed', 'Hujra needs microphone access to hear your recitation.');
       return;
     }
+    if (advanceTimer.current) clearTimeout(advanceTimer.current);
     await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
     await recorder.prepareToRecordAsync();
     recorder.record();
@@ -233,13 +261,24 @@ export default function MemorizeScreen() {
             : `Perfect — all ${ok} words correct. Mā shāʾ Allāh!`
           : `${ok}/${expectedSide.length} words correct · ${mistakes} to review`,
       );
+
+      if (mistakes === 0) {
+        if (ayah === surah.ayahCount) {
+          // Last ayah recited correctly -> surah done: celebrate immediately.
+          completeSurah();
+        } else {
+          // Give the reciter a moment to see the green, then move on.
+          if (advanceTimer.current) clearTimeout(advanceTimer.current);
+          advanceTimer.current = setTimeout(() => resetAyah(ayah + 1), 1600);
+        }
+      }
     } catch (e) {
       Alert.alert('Analysis failed', e instanceof Error ? e.message : 'Could not reach the server.');
       setStatuses(verseWords.map((_, i) => (i === 0 ? 'current' : 'hidden')));
     } finally {
       setMic('idle');
     }
-  }, [recorder, surahNo, ayah, verseWords, refresh, applyReport]);
+  }, [recorder, surahNo, ayah, surah.ayahCount, verseWords, refresh, applyReport, completeSurah, resetAyah]);
 
   // ---- follow-along: poll partial analysis while recording ----------------
   const pollSeq = useRef(0);
@@ -265,7 +304,7 @@ export default function MemorizeScreen() {
       }
     };
 
-    const first = setTimeout(tick, 2200);
+    const first = setTimeout(tick, PARTIAL_FIRST_MS);
     const interval = setInterval(tick, PARTIAL_POLL_MS);
     return () => {
       stopped = true;
@@ -273,27 +312,6 @@ export default function MemorizeScreen() {
       clearInterval(interval);
     };
   }, [mic, recorder, surahNo, ayah, applyReport]);
-
-  const resetAyah = useCallback((nextAyah: number, nextSurah?: number) => {
-    touchedRef.current = true;
-    if (nextSurah) setSurahNo(nextSurah);
-    setAyah(nextAyah);
-  }, []);
-
-  const completeSurah = useCallback(async () => {
-    setCelebrateOpen(true);
-    postComplete(surahNo, surah.ayahCount)
-      .then(() => refresh())
-      .catch(() => {}); // celebration first; persistence retries on next sync
-    try {
-      // Recording audio mode can mute playback on iOS; switch back first.
-      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-      chime.seekTo(0);
-      chime.play();
-    } catch {
-      // the celebration must never crash over a sound
-    }
-  }, [chime, surahNo, surah.ayahCount, refresh]);
 
   // ---- animations (pulse rings, waveform, dots) ---------------------------
   const pulseA = useRef(new Animated.Value(0)).current;
@@ -642,17 +660,40 @@ export default function MemorizeScreen() {
               </Text>
             ) : null}
 
-            {summary ? (
+            {summary && lastOk ? (
               <Text
                 style={{
                   fontFamily: Fonts.bodyBold,
                   fontSize: 13.5,
-                  color: summary.startsWith('Perfect') || summary.startsWith('All') ? palette.primary : palette.error,
+                  color: palette.primary,
                   textAlign: 'center',
                   marginTop: 14,
                 }}>
                 {summary}
               </Text>
+            ) : null}
+
+            {summary && !lastOk ? (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  backgroundColor: palette.errorTint,
+                  borderRadius: 14,
+                  padding: 13,
+                  marginTop: 14,
+                }}>
+                <AlertCircleIcon size={19} color={palette.error} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontFamily: Fonts.bodyBold, fontSize: 13, color: palette.error }}>
+                    Some words need another try
+                  </Text>
+                  <Text style={{ fontFamily: Fonts.body, fontSize: 12, color: palette.error, marginTop: 2 }}>
+                    {summary} — the red words are the ones to fix. Tap the mic to retry.
+                  </Text>
+                </View>
+              </View>
             ) : null}
 
             {summary && ayah < surah.ayahCount ? (
@@ -896,12 +937,17 @@ export default function MemorizeScreen() {
               <CheckIcon size={30} color={palette.gold} strokeWidth={2.2} />
             </View>
             <Text
+              numberOfLines={1}
+              adjustsFontSizeToFit
               style={{
                 fontFamily: Fonts.arabic,
                 fontSize: 30,
+                lineHeight: 58,
                 color: palette.primary,
                 marginTop: 16,
                 writingDirection: 'rtl',
+                textAlign: 'center',
+                width: '100%',
               }}>
               مَا شَاءَ ٱللَّهُ
             </Text>

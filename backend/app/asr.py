@@ -1,10 +1,15 @@
 import difflib
 import re
 import subprocess
+import threading
 
 import numpy as np
 
 from app.config import settings
+
+# One Whisper pass at a time: concurrent CPU inference (live partial polls +
+# the final analysis) thrashes and makes EVERY request slower than serial.
+_inference_lock = threading.Lock()
 
 
 class AudioDecodeError(Exception):
@@ -117,7 +122,8 @@ def _decode_audio(path: str) -> np.ndarray:
 
 def analyze(audio_path: str, expected_text: str) -> dict:
     audio = _decode_audio(audio_path)
-    recited = get_pipeline()({"raw": audio, "sampling_rate": _TARGET_SR})["text"]
+    with _inference_lock:
+        recited = get_pipeline()({"raw": audio, "sampling_rate": _TARGET_SR})["text"]
     return {
         "recited_raw": recited,
         "report": detect_mistakes(expected_text, recited),

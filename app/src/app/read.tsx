@@ -4,8 +4,8 @@
  * with download progress and on-device page caching.
  */
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { FlatList, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { FlatList, Modal, PanResponder, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon } from '@/components/icons';
@@ -60,6 +60,20 @@ export default function ReadScreen() {
       cancelled = true;
     };
   }, [page, retryNonce]);
+
+  // Arabic book direction: the mushaf opens right-to-left, so swiping the
+  // finger RIGHT turns to the NEXT page (it slides in from the left), and
+  // swiping LEFT goes back. Vertical scrolling stays untouched.
+  const swipe = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) =>
+        Math.abs(g.dx) > 24 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+      onPanResponderRelease: (_, g) => {
+        if (g.dx > 50) setPage((p) => Math.min(MUSHAF_PAGES, p + 1));
+        else if (g.dx < -50) setPage((p) => Math.max(1, p - 1));
+      },
+    }),
+  ).current;
 
   const jumpToSurah = async (n: number) => {
     setPickerOpen(false);
@@ -137,6 +151,7 @@ export default function ReadScreen() {
 
       {/* The book page */}
       <ScrollView
+        {...swipe.panHandlers}
         contentContainerStyle={{ padding: Layout.screenPadding, paddingBottom: 34 }}
         showsVerticalScrollIndicator={false}>
         <View

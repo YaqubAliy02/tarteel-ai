@@ -115,18 +115,22 @@ export default function ProgressScreen() {
             </Text>
           ))}
         </View>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>
-          {ACTIVITY.map((v, i) => (
-            <View
-              key={i}
-              style={{
-                // 12 columns with 4px gaps inside the padded card
-                width: `${100 / 12 - 1}%`,
-                aspectRatio: 1,
-                borderRadius: 4,
-                backgroundColor: palette.heatmap[v],
-              }}
-            />
+        {/* 7 rows x 12 columns; flex cells keep the grid perfectly aligned */}
+        <View style={{ gap: 4 }}>
+          {Array.from({ length: 7 }, (_, row) => (
+            <View key={row} style={{ flexDirection: 'row', gap: 4 }}>
+              {ACTIVITY.slice(row * 12, row * 12 + 12).map((v, i) => (
+                <View
+                  key={i}
+                  style={{
+                    flex: 1,
+                    aspectRatio: 1,
+                    borderRadius: 4,
+                    backgroundColor: palette.heatmap[v],
+                  }}
+                />
+              ))}
+            </View>
           ))}
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 10, justifyContent: 'flex-end' }}>

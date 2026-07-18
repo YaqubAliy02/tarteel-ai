@@ -1,16 +1,17 @@
 {
   "expo": {
-    "name": "app",
-    "slug": "app",
+    "name": "Hujra",
+    "slug": "hujra",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "app",
+    "scheme": "hujra",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon"
     },
     "android": {
+      "package": "com.hujra.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
