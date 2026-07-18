@@ -204,13 +204,23 @@ def mark_completed(user_id: int, surah: int, last_ayah: int) -> None:
 
 
 def get_progress(user_id: int) -> dict:
-    """Continue position (most recent surah) + per-surah last ayah."""
+    """Continue position, per-surah last ayah, and mastered ayahs.
+
+    An ayah is "mastered" once ANY attempt recited it fully correctly —
+    the app shows mastered ayahs revealed in green instead of hidden.
+    """
     if _pool is None:
-        return {"continue": None, "surahs": []}
+        return {"continue": None, "surahs": [], "mastered": []}
     with _pool.connection() as conn:
         rows = conn.execute(
             "SELECT surah, last_ayah, updated_at, completed FROM memorization_progress"
             " WHERE user_id = %s ORDER BY updated_at DESC",
+            (user_id,),
+        ).fetchall()
+        mastered_rows = conn.execute(
+            "SELECT DISTINCT surah, ayah FROM attempts"
+            " WHERE user_id = %s AND total_words > 0 AND ok_words = total_words"
+            " ORDER BY surah, ayah",
             (user_id,),
         ).fetchall()
     surahs = [
@@ -218,7 +228,8 @@ def get_progress(user_id: int) -> dict:
         for s, a, ts, c in rows
     ]
     cont = {"surah": rows[0][0], "ayah": rows[0][1]} if rows else None
-    return {"continue": cont, "surahs": surahs}
+    mastered = [{"surah": s, "ayah": a} for s, a in mastered_rows]
+    return {"continue": cont, "surahs": surahs, "mastered": mastered}
 
 
 def get_mistakes(user_id: int, limit: int = 200) -> list[dict]:

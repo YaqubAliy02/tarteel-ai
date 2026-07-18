@@ -16,13 +16,42 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 
+import { AuthScreen } from '@/components/auth-screen';
 import { useHujraTheme } from '@/hooks/use-hujra-theme';
+import { AuthProvider, useAuth } from '@/store/auth';
 import { SessionProvider } from '@/store/session';
 
 SplashScreen.preventAutoHideAsync();
 
-export default function RootLayout() {
+function Gate() {
   const { isDark } = useHujraTheme();
+  const { user, ready } = useAuth();
+
+  if (!ready) return null;
+
+  if (!user) {
+    return (
+      <>
+        <StatusBar style={isDark ? 'light' : 'dark'} />
+        <AuthScreen />
+      </>
+    );
+  }
+
+  return (
+    <SessionProvider>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="goal-setup" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="read" />
+        <Stack.Screen name="listen" />
+      </Stack>
+    </SessionProvider>
+  );
+}
+
+export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     Amiri_400Regular,
     Amiri_700Bold,
@@ -42,12 +71,8 @@ export default function RootLayout() {
   if (!fontsLoaded) return null;
 
   return (
-    <SessionProvider>
-      <StatusBar style={isDark ? 'light' : 'dark'} />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="goal-setup" options={{ presentation: 'modal' }} />
-      </Stack>
-    </SessionProvider>
+    <AuthProvider>
+      <Gate />
+    </AuthProvider>
   );
 }

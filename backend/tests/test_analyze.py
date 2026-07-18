@@ -4,11 +4,21 @@ import wave
 import pytest
 from fastapi.testclient import TestClient
 
-from app import asr, db, main, quran_client
+from app import asr, auth, db, main, quran_client
 from app.main import app
 from app.quran_client import QuranApiError, VerseNotFound
 
 FATIHAH_1_2 = "الحمد لله رب العالمين"
+
+TEST_USER_ID = 1
+
+
+@pytest.fixture(autouse=True)
+def fake_auth():
+    """Authenticate all requests as user 1 unless a test removes this."""
+    app.dependency_overrides[auth.current_user_id] = lambda: TEST_USER_ID
+    yield
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -16,9 +26,9 @@ def no_db(monkeypatch):
     """Keep tests off the real database; capture persistence calls."""
     calls: list[dict] = []
 
-    def fake_record_attempt(surah, ayah, ok_words, total_words, mistakes):
+    def fake_record_attempt(user_id, surah, ayah, ok_words, total_words, mistakes):
         calls.append(
-            {"surah": surah, "ayah": ayah, "ok": ok_words, "total": total_words, "mistakes": mistakes}
+            {"user": user_id, "surah": surah, "ayah": ayah, "ok": ok_words, "total": total_words, "mistakes": mistakes}
         )
 
     monkeypatch.setattr(db, "open_pool", lambda: None)
@@ -277,8 +287,8 @@ def test_partial_analyze_keeps_real_skips_as_missing(monkeypatch, no_db):
 def test_position_and_complete_endpoints(monkeypatch):
     _stub_asr(monkeypatch, FATIHAH_1_2)
     calls = []
-    monkeypatch.setattr(db, "set_position", lambda s, a: calls.append(("pos", s, a)))
-    monkeypatch.setattr(db, "mark_completed", lambda s, a: calls.append(("done", s, a)))
+    monkeypatch.setattr(db, "set_position", lambda u, s, a: calls.append(("pos", s, a)))
+    monkeypatch.setattr(db, "mark_completed", lambda u, s, a: calls.append(("done", s, a)))
 
     with TestClient(app) as client:
         assert client.post("/progress/position", data={"surah": 2, "ayah": 5}).status_code == 200
@@ -291,17 +301,17 @@ def test_position_and_complete_endpoints(monkeypatch):
 def test_progress_mistakes_stats_endpoints(monkeypatch):
     _stub_asr(monkeypatch, FATIHAH_1_2)
     monkeypatch.setattr(
-        db, "get_progress", lambda: {"continue": {"surah": 1, "ayah": 2}, "surahs": []}
+        db, "get_progress", lambda user_id: {"continue": {"surah": 1, "ayah": 2}, "surahs": []}
     )
     monkeypatch.setattr(
         db,
         "get_mistakes",
-        lambda limit=200: [
+        lambda user_id, limit=200: [
             {"id": 1, "surah": 1, "ayah": 2, "verdict": "WRONG", "expected": "x", "recited": "y", "created_at": "2026-07-18T00:00:00"}
         ],
     )
     monkeypatch.setattr(
-        db, "get_stats", lambda: {"accuracy": 91, "attempts": 3, "streak": 2, "activity": []}
+        db, "get_stats", lambda user_id: {"accuracy": 91, "attempts": 3, "streak": 2, "activity": [], "surah_strength": []}
     )
 
     with TestClient(app) as client:

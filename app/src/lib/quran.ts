@@ -178,6 +178,89 @@ export async function fetchVerseText(surah: number, ayah: number): Promise<strin
   return text;
 }
 
+// ---- Mushaf pages (Madani layout, 604 pages) --------------------------------
+
+export const MUSHAF_PAGES = 604;
+
+export type MushafVerse = { surah: number; ayah: number; text: string };
+
+const pageMemCache = new Map<number, MushafVerse[]>();
+
+/**
+ * Verses of one physical Mushaf page. Downloaded with progress reporting and
+ * cached on disk, so previously read pages open instantly and offline.
+ */
+export async function fetchMushafPage(
+  page: number,
+  onProgress?: (pct: number) => void,
+): Promise<MushafVerse[]> {
+  const cached = pageMemCache.get(page);
+  if (cached) return cached;
+
+  const FileSystem = await import('expo-file-system/legacy');
+  const dest = `${FileSystem.cacheDirectory}mushaf_page_${page}.json`;
+  const partial = `${dest}.part`;
+
+  const info = await FileSystem.getInfoAsync(dest);
+  if (!info.exists) {
+    onProgress?.(0);
+    const download = FileSystem.createDownloadResumable(
+      `${QURAN_API}/quran/verses/uthmani?page_number=${page}`,
+      partial,
+      {},
+      (p) => {
+        if (p.totalBytesExpectedToWrite > 0) {
+          onProgress?.(Math.min(100, Math.round((p.totalBytesWritten / p.totalBytesExpectedToWrite) * 100)));
+        }
+      },
+    );
+    try {
+      const result = await download.downloadAsync();
+      if (!result || (result.status && result.status >= 400)) throw new Error('download failed');
+      await FileSystem.moveAsync({ from: partial, to: dest });
+    } catch (e) {
+      await FileSystem.deleteAsync(partial, { idempotent: true }).catch(() => {});
+      throw e;
+    }
+  }
+
+  const raw = await FileSystem.readAsStringAsync(dest);
+  const json = JSON.parse(raw);
+  const verses: MushafVerse[] = (json.verses ?? []).map(
+    (v: { verse_key: string; text_uthmani: string }) => {
+      const [s, a] = v.verse_key.split(':');
+      return { surah: Number(s), ayah: Number(a), text: v.text_uthmani.trim() };
+    },
+  );
+  if (!verses.length) {
+    // corrupt cache entry — remove so the next attempt re-downloads
+    await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
+    throw new Error(`page ${page} returned no verses`);
+  }
+  pageMemCache.set(page, verses);
+  return verses;
+}
+
+let surahStartPages: number[] | null = null;
+
+/** First Mushaf page of a surah (from the chapters catalog, cached). */
+export async function getSurahStartPage(surah: number): Promise<number> {
+  if (!surahStartPages) {
+    const resp = await fetchWithTimeout(`${QURAN_API}/chapters`, 15000);
+    if (!resp.ok) throw new Error(`chapters fetch failed (${resp.status})`);
+    const json = await resp.json();
+    const chapters = json.chapters ?? [];
+    if (chapters.length !== 114) throw new Error('unexpected chapters payload');
+    surahStartPages = chapters.map((c: { pages: number[] }) => c.pages[0]);
+  }
+  return surahStartPages?.[surah - 1] ?? 1;
+}
+
+/** Full-surah recitation by Mishary Rashid Alafasy (Islamic Network CDN). */
+export function alafasySurahAudioUrl(surah: number): string {
+  return `https://cdn.islamic.network/quran/audio-surah/128/ar.alafasy/${surah}.mp3`;
+}
+
 /** Decorative — resolves to null on any failure; never blocks the verse. */
 export async function fetchTranslation(surah: number, ayah: number): Promise<string | null> {
   const key = `${surah}:${ayah}`;

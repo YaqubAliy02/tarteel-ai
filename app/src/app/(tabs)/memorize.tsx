@@ -98,7 +98,8 @@ export default function MemorizeScreen() {
   const [translation, setTranslation] = useState<string | null>(null);
   const [verseError, setVerseError] = useState<string | null>(null);
   const [statuses, setStatuses] = useState<WordStatus[]>([]);
-  const [peek, setPeek] = useState(false);
+  // Words are READABLE by default; the eye toggles hide-for-recall test mode.
+  const [peek, setPeek] = useState(true);
   const [mic, setMic] = useState<MicState>('idle');
   const [summary, setSummary] = useState<string | null>(null);
   const [lastOk, setLastOk] = useState(false);
@@ -112,6 +113,9 @@ export default function MemorizeScreen() {
   const surah = getSurah(surahNo);
   const recorder = useAudioRecorder(FOLLOW_ALONG_RECORDING);
   const isCompleted = !!progress?.surahs.find((s) => s.surah === surahNo)?.completed;
+  // This ayah was recited fully correctly at least once -> show it in green.
+  const isMastered =
+    isCompleted || !!progress?.mastered?.some((m) => m.surah === surahNo && m.ayah === ayah);
 
   // Resume where the user left off (from the DB) — once, and only if they
   // haven't already navigated somewhere themselves.
@@ -140,9 +144,10 @@ export default function MemorizeScreen() {
         if (cancelled) return;
         const words = text.split(/\s+/).filter(Boolean);
         setVerseWords(words);
-        // Completed surahs open in review mode: everything revealed, emerald.
+        // Mastered ayahs (and completed surahs) open revealed in emerald;
+        // everything else opens hidden — that's the memorization test.
         setStatuses(
-          isCompleted
+          isMastered
             ? words.map(() => 'recited' as const)
             : words.map((_, i) => (i === 0 ? 'current' : 'hidden')),
         );
@@ -156,7 +161,7 @@ export default function MemorizeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [surahNo, ayah, retryNonce, isCompleted]);
+  }, [surahNo, ayah, retryNonce, isMastered]);
 
   // Keep "continue where you left off" in sync with navigation (debounced).
   useEffect(() => {
@@ -330,9 +335,14 @@ export default function MemorizeScreen() {
   }, [mic, pulseA, pulseB, wave, dots]);
 
   // ---- word rendering -----------------------------------------------------
+  // Completed surah + not actively re-testing = clean review mode: every word
+  // plain emerald, NO chips/pills/underlines. Live word states (gold current
+  // chip, hidden pills, red mistakes) belong to an active recitation only.
+  const reviewMode = isMastered && mic === 'idle' && !summary;
+
   const wordEls = useMemo(() => {
     return verseWords.map((w, i) => {
-      const status = statuses[i] ?? 'neutral';
+      const status = reviewMode ? 'recited' : (statuses[i] ?? 'neutral');
       const base = {
         fontFamily: Fonts.arabic,
         fontSize: 33,
@@ -375,7 +385,8 @@ export default function MemorizeScreen() {
                 paddingHorizontal: 8,
                 paddingVertical: 1,
               }}>
-              <Text style={[base, { lineHeight: 50 }]}>{w}</Text>
+              {/* lineHeight must fit Amiri's tall marks or glyphs clip */}
+              <Text style={[base, { lineHeight: 60 }]}>{w}</Text>
             </View>
             <Text style={base}> </Text>
           </Text>
@@ -401,7 +412,9 @@ export default function MemorizeScreen() {
                 borderRadius: 8,
                 paddingHorizontal: 6,
               }}>
-              <Text style={[base, { lineHeight: 50, color: 'transparent' }]}>{w}</Text>
+              {/* opacity 0, NOT color:'transparent' — Android still draws
+                  transparent-colored glyphs with some fonts. */}
+              <Text style={[base, { lineHeight: 60, opacity: 0 }]}>{w}</Text>
             </View>
             <Text style={base}> </Text>
           </Text>
@@ -414,7 +427,7 @@ export default function MemorizeScreen() {
         </Text>
       );
     });
-  }, [verseWords, statuses, peek, palette]);
+  }, [verseWords, statuses, peek, palette, reviewMode]);
 
   const headerCircle = {
     width: 40,
@@ -466,23 +479,50 @@ export default function MemorizeScreen() {
           </Pressable>
           <Pressable style={headerCircle} onPress={() => setPeek((v) => !v)}>
             {peek ? (
-              <EyeOffIcon size={19} color={palette.gold} />
-            ) : (
               <EyeIcon size={19} color={palette.textPrimary} />
+            ) : (
+              <EyeOffIcon size={19} color={palette.gold} />
             )}
           </Pressable>
         </View>
 
         {/* Ayah progress */}
         <View style={{ paddingHorizontal: Layout.screenPadding, marginTop: 14 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-            <Pressable onPress={() => setAyahPickerOpen(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+            <Pressable
+              onPress={() => setAyahPickerOpen(true)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flex: 1 }}>
               <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 11.5, color: palette.textSecondary }}>
                 Ayah {ayah} / {surah.ayahCount}
               </Text>
               <ChevronDownIcon size={12} color={palette.textSecondary} />
             </Pressable>
-            <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 11.5, color: palette.textSecondary }}>
+            {/* Always-available ayah navigation (review mode has no result pill) */}
+            {[
+              { key: 'prev', disabled: ayah <= 1, Icon: ChevronLeftIcon, go: () => resetAyah(ayah - 1) },
+              { key: 'next', disabled: ayah >= surah.ayahCount, Icon: ChevronRightIcon, go: () => resetAyah(ayah + 1) },
+            ].map((b) => (
+              <Pressable
+                key={b.key}
+                disabled={b.disabled}
+                onPress={b.go}
+                hitSlop={8}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 14,
+                  marginLeft: 8,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: palette.surface,
+                  borderWidth: 1,
+                  borderColor: palette.cardBorder,
+                  opacity: b.disabled ? 0.35 : 1,
+                }}>
+                <b.Icon size={15} color={palette.textPrimary} />
+              </Pressable>
+            ))}
+            <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 11.5, color: palette.textSecondary, marginLeft: 10 }}>
               {Math.round((ayah / surah.ayahCount) * 100)}%
             </Text>
           </View>
@@ -577,22 +617,10 @@ export default function MemorizeScreen() {
             ) : (
               <Text style={{ textAlign: 'center', writingDirection: 'rtl', marginTop: 8 }}>
                 {wordEls}
-                <Text>
-                  <View
-                    style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: 16,
-                      borderWidth: 1.5,
-                      borderColor: palette.verseOrnament,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      transform: [{ translateY: 6 }],
-                    }}>
-                    <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 14, color: palette.gold }}>
-                      {toArabicIndic(ayah)}
-                    </Text>
-                  </View>
+                {/* NBSP+RLM bind the ornament to the last word so it renders
+                    at the ayah's true end (visual left) and never wraps alone. */}
+                <Text style={{ fontFamily: Fonts.arabic, fontSize: 26, lineHeight: 74, color: palette.gold }}>
+                  {' ‏﴿' + toArabicIndic(ayah) + '﴾‏'}
                 </Text>
               </Text>
             )}

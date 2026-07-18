@@ -14,6 +14,7 @@ import { Screen } from '@/components/screen';
 import { Fonts, Layout } from '@/constants/hujra';
 import { useHujraTheme } from '@/hooks/use-hujra-theme';
 import { getSurah } from '@/lib/quran';
+import { useAuth } from '@/store/auth';
 import { useSession } from '@/store/session';
 
 const DAILY_GOAL = 12; // verses/day; becomes user-configurable with Goal sync
@@ -21,6 +22,9 @@ const DAILY_GOAL = 12; // verses/day; becomes user-configurable with Goal sync
 export default function HomeScreen() {
   const { palette, isDark } = useHujraTheme();
   const { mistakes, stats, progress, refresh } = useSession();
+  const { user, signOut } = useAuth();
+  const firstName = (user?.display_name || user?.email || 'friend').split(/[\s@]/)[0];
+  const initial = (firstName[0] ?? 'H').toUpperCase();
 
   // Always show the latest position/stats when the user lands on Home.
   useFocusEffect(
@@ -76,10 +80,16 @@ export default function HomeScreen() {
         <View style={{ flex: 1 }}>
           <Text style={{ fontFamily: Fonts.body, fontSize: 12.5, color: palette.textSecondary }}>{today}</Text>
           <Text style={{ fontFamily: Fonts.display, fontSize: 22, color: palette.textPrimary, marginTop: 5 }}>
-            Assalāmu ʿalaykum, Yusuf
+            Assalāmu ʿalaykum, {firstName}
           </Text>
         </View>
-        <View
+        <Pressable
+          onPress={() =>
+            Alert.alert(user?.display_name || 'Account', user?.email ?? '', [
+              { text: 'Sign out', style: 'destructive', onPress: () => signOut() },
+              { text: 'Cancel', style: 'cancel' },
+            ])
+          }
           style={{
             width: 44,
             height: 44,
@@ -88,8 +98,8 @@ export default function HomeScreen() {
             alignItems: 'center',
             justifyContent: 'center',
           }}>
-          <Text style={{ fontFamily: Fonts.display, fontSize: 17, color: palette.primary }}>Y</Text>
-        </View>
+          <Text style={{ fontFamily: Fonts.display, fontSize: 17, color: palette.primary }}>{initial}</Text>
+        </Pressable>
       </View>
 
       {/* Today's goal */}
@@ -232,16 +242,16 @@ export default function HomeScreen() {
             tint: palette.goldTint,
             color: palette.gold,
             Icon: BookOpenIcon,
-            onPress: () => notYet('Read'),
+            onPress: () => router.push('/read'),
           },
           {
             key: 'listen',
             title: 'Listen',
-            caption: 'Recitations',
+            caption: 'Mishary Alafasy',
             tint: palette.primaryTint,
             color: palette.primary,
             Icon: HeadphonesIcon,
-            onPress: () => notYet('Listen'),
+            onPress: () => router.push('/listen'),
           },
           {
             key: 'review',

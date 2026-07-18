@@ -14,12 +14,50 @@ export const API_BASE =
   process.env.EXPO_PUBLIC_API_URL ??
   (Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://127.0.0.1:8000');
 
+// Bearer token attached to every request; set by the auth store.
+let authToken: string | null = null;
+export function setAuthToken(token: string | null) {
+  authToken = token;
+}
+function authHeaders(): Record<string, string> {
+  return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+}
+
+export type AuthUser = { id: number; email: string; display_name: string };
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    const detail =
+      json && typeof json === 'object' && 'detail' in json ? String(json.detail) : `HTTP ${resp.status}`;
+    throw new Error(detail);
+  }
+  return json as T;
+}
+
+export const registerAccount = (email: string, password: string, displayName: string) =>
+  postJson<{ token: string; user: AuthUser }>('/auth/register', {
+    email,
+    password,
+    display_name: displayName,
+  });
+
+export const loginAccount = (email: string, password: string) =>
+  postJson<{ token: string; user: AuthUser }>('/auth/login', { email, password });
+
 // PENDING appears only in partial (mid-recitation) reports: not reached yet.
 export type Verdict = 'OK' | 'WRONG' | 'MISSING' | 'EXTRA' | 'PENDING';
 
 export type ProgressResponse = {
   continue: { surah: number; ayah: number } | null;
   surahs: { surah: number; last_ayah: number; updated_at: string; completed: boolean }[];
+  // Ayahs recited fully correctly at least once — shown revealed in green.
+  mastered: { surah: number; ayah: number }[];
 };
 
 export type ServerMistake = {
@@ -44,7 +82,7 @@ async function getJson<T>(path: string): Promise<T> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
-    const resp = await fetch(`${API_BASE}${path}`, { signal: ctrl.signal });
+    const resp = await fetch(`${API_BASE}${path}`, { signal: ctrl.signal, headers: authHeaders() });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return (await resp.json()) as T;
   } finally {
@@ -59,7 +97,7 @@ export const getStats = () => getJson<StatsResponse>('/stats');
 async function postForm(path: string, fields: Record<string, string>): Promise<void> {
   const form = new FormData();
   for (const [key, value] of Object.entries(fields)) form.append(key, value);
-  await fetch(`${API_BASE}${path}`, { method: 'POST', body: form });
+  await fetch(`${API_BASE}${path}`, { method: 'POST', body: form, headers: authHeaders() });
 }
 
 /** Track navigation so "continue where you left off" follows the user. */
@@ -100,6 +138,7 @@ async function uploadForAnalysis(
     fieldName: 'audio',
     mimeType: MIME_BY_EXT[ext] ?? 'audio/m4a',
     parameters: { surah: String(surah), ayah: String(ayah) },
+    headers: authHeaders(),
   });
 
   let body: unknown = null;
