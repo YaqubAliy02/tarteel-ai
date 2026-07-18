@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Env / secrets
+.env
+*.env.local
+
+# ML model cache (downloaded at runtime, not checked in)
+backend/.cache/
+huggingface/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Flutter / RN (populated once /app is scaffolded)
+app/build/
+app/.dart_tool/
+app/node_modules/
