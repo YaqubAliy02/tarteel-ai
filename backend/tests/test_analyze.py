@@ -243,6 +243,22 @@ def test_partial_analyze_marks_unreached_words_pending(monkeypatch, no_db):
     assert no_db == []  # partial results are never persisted
 
 
+def test_partial_analyze_treats_halfspoken_frontier_word_as_pending(monkeypatch, no_db):
+    # The third word is mid-utterance (garbled) and nothing follows it yet —
+    # it must show as PENDING, not flash red.
+    _stub_asr(monkeypatch, "الحمد لله الرح")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/analyze/partial",
+            data={"expected_text": FATIHAH_1_2},
+            files={"audio": ("clip.wav", _silent_wav_bytes(), "audio/wav")},
+        )
+
+    verdicts = [w["verdict"] for w in response.json()["report"]]
+    assert verdicts == ["OK", "OK", "PENDING", "PENDING"]
+
+
 def test_partial_analyze_keeps_real_skips_as_missing(monkeypatch, no_db):
     # Second word skipped, but the reciter has moved past it: MISSING sticks.
     _stub_asr(monkeypatch, "الحمد رب")
@@ -256,6 +272,20 @@ def test_partial_analyze_keeps_real_skips_as_missing(monkeypatch, no_db):
 
     verdicts = [w["verdict"] for w in response.json()["report"]]
     assert verdicts == ["OK", "MISSING", "OK", "PENDING"]
+
+
+def test_position_and_complete_endpoints(monkeypatch):
+    _stub_asr(monkeypatch, FATIHAH_1_2)
+    calls = []
+    monkeypatch.setattr(db, "set_position", lambda s, a: calls.append(("pos", s, a)))
+    monkeypatch.setattr(db, "mark_completed", lambda s, a: calls.append(("done", s, a)))
+
+    with TestClient(app) as client:
+        assert client.post("/progress/position", data={"surah": 2, "ayah": 5}).status_code == 200
+        assert client.post("/progress/complete", data={"surah": 108, "last_ayah": 3}).status_code == 200
+        assert client.post("/progress/position", data={"surah": 999, "ayah": 1}).status_code == 422
+
+    assert calls == [("pos", 2, 5), ("done", 108, 3)]
 
 
 def test_progress_mistakes_stats_endpoints(monkeypatch):

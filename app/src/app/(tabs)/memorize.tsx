@@ -11,6 +11,7 @@ import {
   AudioQuality,
   IOSOutputFormat,
   setAudioModeAsync,
+  useAudioPlayer,
   useAudioRecorder,
   type RecordingOptions,
 } from 'expo-audio';
@@ -30,6 +31,7 @@ import {
 } from 'react-native';
 
 import {
+  CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -41,7 +43,13 @@ import {
 import { Screen } from '@/components/screen';
 import { Fonts, Layout } from '@/constants/hujra';
 import { useHujraTheme } from '@/hooks/use-hujra-theme';
-import { analyzePartial, analyzeRecitation, type AnalyzeResponse } from '@/lib/api';
+import {
+  analyzePartial,
+  analyzeRecitation,
+  postComplete,
+  postPosition,
+  type AnalyzeResponse,
+} from '@/lib/api';
 import { SURAHS, fetchTranslation, fetchVerseText, getSurah, toArabicIndic } from '@/lib/quran';
 import { useSession } from '@/store/session';
 
@@ -93,11 +101,17 @@ export default function MemorizeScreen() {
   const [peek, setPeek] = useState(false);
   const [mic, setMic] = useState<MicState>('idle');
   const [summary, setSummary] = useState<string | null>(null);
+  const [lastOk, setLastOk] = useState(false);
+  const [celebrateOpen, setCelebrateOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [ayahPickerOpen, setAyahPickerOpen] = useState(false);
+
+  const chime = useAudioPlayer(require('@/assets/sounds/celebration.wav'));
   const [retryNonce, setRetryNonce] = useState(0);
 
   const surah = getSurah(surahNo);
   const recorder = useAudioRecorder(FOLLOW_ALONG_RECORDING);
+  const isCompleted = !!progress?.surahs.find((s) => s.surah === surahNo)?.completed;
 
   // Resume where the user left off (from the DB) — once, and only if they
   // haven't already navigated somewhere themselves.
@@ -118,6 +132,7 @@ export default function MemorizeScreen() {
     setTranslation(null);
     setVerseError(null);
     setSummary(null);
+    setLastOk(false);
     // Verse text renders as soon as it arrives; the translation is fetched
     // independently and fills in later so it can never block the verse.
     fetchVerseText(surahNo, ayah)
@@ -125,7 +140,12 @@ export default function MemorizeScreen() {
         if (cancelled) return;
         const words = text.split(/\s+/).filter(Boolean);
         setVerseWords(words);
-        setStatuses(words.map((_, i) => (i === 0 ? 'current' : 'hidden')));
+        // Completed surahs open in review mode: everything revealed, emerald.
+        setStatuses(
+          isCompleted
+            ? words.map(() => 'recited' as const)
+            : words.map((_, i) => (i === 0 ? 'current' : 'hidden')),
+        );
       })
       .catch(() => {
         if (!cancelled) setVerseError('Could not load the verse. Check your connection and retry.');
@@ -136,7 +156,16 @@ export default function MemorizeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [surahNo, ayah, retryNonce]);
+  }, [surahNo, ayah, retryNonce, isCompleted]);
+
+  // Keep "continue where you left off" in sync with navigation (debounced).
+  useEffect(() => {
+    if (!touchedRef.current && !resumedRef.current) return;
+    const timer = setTimeout(() => {
+      postPosition(surahNo, ayah).catch(() => {});
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [surahNo, ayah]);
 
   // Map a server report onto per-word display states. In partial mode the
   // first not-yet-reached word gets the gold "current" highlight.
@@ -170,10 +199,13 @@ export default function MemorizeScreen() {
     await recorder.prepareToRecordAsync();
     recorder.record();
     setSummary(null);
+    // Re-testing a completed surah hides the words again for the duration.
+    setStatuses(verseWords.map((_, i) => (i === 0 ? 'current' : 'hidden')));
     setMic('recording');
-  }, [recorder]);
+  }, [recorder, verseWords]);
 
   const stopAndAnalyze = useCallback(async () => {
+    pollSeq.current += 1; // invalidate any in-flight partial poll
     setMic('processing');
     try {
       await recorder.stop();
@@ -185,16 +217,10 @@ export default function MemorizeScreen() {
 
       const expectedSide = result.report.filter((r) => r.verdict !== 'EXTRA');
       const extras = result.report.length - expectedSide.length;
-      setStatuses(
-        verseWords.map((_, i) => {
-          const v = expectedSide[i]?.verdict;
-          if (v === 'OK') return 'recited';
-          if (v === 'WRONG' || v === 'MISSING') return 'mistake';
-          return 'neutral';
-        }),
-      );
+      applyReport(result, false);
       const ok = expectedSide.filter((r) => r.verdict === 'OK').length;
       const mistakes = expectedSide.length - ok;
+      setLastOk(mistakes === 0);
       setSummary(
         mistakes === 0
           ? extras > 0
@@ -208,13 +234,61 @@ export default function MemorizeScreen() {
     } finally {
       setMic('idle');
     }
-  }, [recorder, surahNo, ayah, verseWords, refresh]);
+  }, [recorder, surahNo, ayah, verseWords, refresh, applyReport]);
+
+  // ---- follow-along: poll partial analysis while recording ----------------
+  const pollSeq = useRef(0);
+  const pollBusy = useRef(false);
+
+  useEffect(() => {
+    if (mic !== 'recording') return;
+    const seq = ++pollSeq.current;
+    let stopped = false;
+
+    const tick = async () => {
+      if (stopped || pollBusy.current) return;
+      const uri = recorder.uri;
+      if (!uri) return;
+      pollBusy.current = true;
+      try {
+        const result = await analyzePartial(surahNo, ayah, uri);
+        if (!stopped && pollSeq.current === seq) applyReport(result, true);
+      } catch {
+        // polls are best-effort; the final analysis is authoritative
+      } finally {
+        pollBusy.current = false;
+      }
+    };
+
+    const first = setTimeout(tick, 2200);
+    const interval = setInterval(tick, PARTIAL_POLL_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(first);
+      clearInterval(interval);
+    };
+  }, [mic, recorder, surahNo, ayah, applyReport]);
 
   const resetAyah = useCallback((nextAyah: number, nextSurah?: number) => {
     touchedRef.current = true;
     if (nextSurah) setSurahNo(nextSurah);
     setAyah(nextAyah);
   }, []);
+
+  const completeSurah = useCallback(async () => {
+    setCelebrateOpen(true);
+    postComplete(surahNo, surah.ayahCount)
+      .then(() => refresh())
+      .catch(() => {}); // celebration first; persistence retries on next sync
+    try {
+      // Recording audio mode can mute playback on iOS; switch back first.
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      chime.seekTo(0);
+      chime.play();
+    } catch {
+      // the celebration must never crash over a sound
+    }
+  }, [chime, surahNo, surah.ayahCount, refresh]);
 
   // ---- animations (pulse rings, waveform, dots) ---------------------------
   const pulseA = useRef(new Animated.Value(0)).current;
@@ -308,32 +382,34 @@ export default function MemorizeScreen() {
         );
       }
       if (status === 'hidden' && !peek) {
-        // RN has no cross-platform text blur; Android/web get a real blur,
-        // iOS hides the glyphs behind a soft pill so the word stays unreadable.
-        if (Platform.OS === 'ios') {
+        // RN's blur filter does not apply to Text on iOS OR Android — only
+        // web renders it. Native platforms mask the glyphs behind a soft
+        // pill (transparent text keeps correct word width/flow).
+        if (Platform.OS === 'web') {
           return (
-            <Text key={i}>
-              <View
-                style={{
-                  backgroundColor: palette.hiddenWord,
-                  opacity: 0.35,
-                  borderRadius: 8,
-                  paddingHorizontal: 6,
-                }}>
-                <Text style={[base, { lineHeight: 50, color: 'transparent' }]}>{w}</Text>
-              </View>
-              <Text style={base}> </Text>
+            <Text key={i} style={[base, { color: palette.hiddenWord, opacity: 0.55, filter: 'blur(6px)' as never }]}>
+              {w}{' '}
             </Text>
           );
         }
         return (
-          <Text key={i} style={[base, { color: palette.hiddenWord, opacity: 0.55, filter: 'blur(6px)' as never }]}>
-            {w}{' '}
+          <Text key={i}>
+            <View
+              style={{
+                backgroundColor: palette.hiddenWord,
+                opacity: 0.35,
+                borderRadius: 8,
+                paddingHorizontal: 6,
+              }}>
+              <Text style={[base, { lineHeight: 50, color: 'transparent' }]}>{w}</Text>
+            </View>
+            <Text style={base}> </Text>
           </Text>
         );
       }
+      // Peeked hidden words reveal in full ink so the eye toggle is obvious.
       return (
-        <Text key={i} style={[base, status === 'hidden' ? { color: palette.hiddenWord } : null]}>
+        <Text key={i} style={base}>
           {w}{' '}
         </Text>
       );
@@ -379,8 +455,13 @@ export default function MemorizeScreen() {
               </Text>
               <ChevronDownIcon size={15} color={palette.textSecondary} />
             </View>
-            <Text style={{ fontFamily: Fonts.body, fontSize: 12, color: palette.textSecondary }}>
-              Memorize · Ayah {ayah}
+            <Text
+              style={{
+                fontFamily: Fonts.body,
+                fontSize: 12,
+                color: isCompleted ? palette.gold : palette.textSecondary,
+              }}>
+              {isCompleted ? '✓ Completed' : 'Memorize'} · Ayah {ayah}
             </Text>
           </Pressable>
           <Pressable style={headerCircle} onPress={() => setPeek((v) => !v)}>
@@ -395,9 +476,12 @@ export default function MemorizeScreen() {
         {/* Ayah progress */}
         <View style={{ paddingHorizontal: Layout.screenPadding, marginTop: 14 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-            <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 11.5, color: palette.textSecondary }}>
-              Ayah {ayah} / {surah.ayahCount}
-            </Text>
+            <Pressable onPress={() => setAyahPickerOpen(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 11.5, color: palette.textSecondary }}>
+                Ayah {ayah} / {surah.ayahCount}
+              </Text>
+              <ChevronDownIcon size={12} color={palette.textSecondary} />
+            </Pressable>
             <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 11.5, color: palette.textSecondary }}>
               {Math.round((ayah / surah.ayahCount) * 100)}%
             </Text>
@@ -561,6 +645,23 @@ export default function MemorizeScreen() {
                 <ChevronRightIcon size={15} color={palette.primary} />
               </Pressable>
             ) : null}
+
+            {summary && lastOk && ayah === surah.ayahCount ? (
+              <Pressable
+                onPress={completeSurah}
+                style={{
+                  alignSelf: 'center',
+                  marginTop: 12,
+                  backgroundColor: palette.primary,
+                  borderRadius: Layout.radiusButton,
+                  paddingHorizontal: 22,
+                  paddingVertical: 13,
+                }}>
+                <Text style={{ fontFamily: Fonts.display, fontSize: 15, color: '#FFFFFF' }}>
+                  Complete Surah {surah.name}
+                </Text>
+              </Pressable>
+            ) : null}
             </ScrollView>
           </View>
 
@@ -675,6 +776,149 @@ export default function MemorizeScreen() {
           </Text>
         ) : null}
       </View>
+
+      {/* Ayah jump picker */}
+      <Modal visible={ayahPickerOpen} animationType="slide" transparent onRequestClose={() => setAyahPickerOpen(false)}>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' }} onPress={() => setAyahPickerOpen(false)} />
+        <View
+          style={{
+            backgroundColor: palette.bg,
+            borderTopLeftRadius: 26,
+            borderTopRightRadius: 26,
+            maxHeight: '60%',
+            paddingTop: 14,
+          }}>
+          <Text
+            style={{
+              fontFamily: Fonts.display,
+              fontSize: 18,
+              color: palette.textPrimary,
+              textAlign: 'center',
+              marginBottom: 10,
+            }}>
+            Jump to ayah · {surah.name}
+          </Text>
+          <FlatList
+            data={Array.from({ length: surah.ayahCount }, (_, i) => i + 1)}
+            keyExtractor={(n) => String(n)}
+            numColumns={6}
+            contentContainerStyle={{ paddingHorizontal: Layout.screenPadding, paddingBottom: 24 }}
+            renderItem={({ item }) => (
+              <Pressable
+                onPress={() => {
+                  setAyahPickerOpen(false);
+                  resetAyah(item);
+                }}
+                style={{
+                  flex: 1,
+                  margin: 4,
+                  aspectRatio: 1.3,
+                  borderRadius: 12,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: item === ayah ? palette.primary : palette.surface,
+                  borderWidth: 1,
+                  borderColor: item === ayah ? palette.primary : palette.cardBorder,
+                }}>
+                <Text
+                  style={{
+                    fontFamily: Fonts.bodySemiBold,
+                    fontSize: 14,
+                    color: item === ayah ? '#FFFFFF' : palette.textPrimary,
+                  }}>
+                  {item}
+                </Text>
+              </Pressable>
+            )}
+          />
+        </View>
+      </Modal>
+
+      {/* Surah completion celebration */}
+      <Modal visible={celebrateOpen} animationType="fade" transparent onRequestClose={() => setCelebrateOpen(false)}>
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(13,23,20,0.72)',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 30,
+          }}>
+          <View
+            style={{
+              width: '100%',
+              backgroundColor: palette.mushafSurface,
+              borderRadius: Layout.radiusVerseCard,
+              borderWidth: 1.5,
+              borderColor: palette.goldLine,
+              padding: 28,
+              alignItems: 'center',
+            }}>
+            <View
+              style={{
+                width: 64,
+                height: 64,
+                borderRadius: 32,
+                backgroundColor: palette.goldTint,
+                borderWidth: 1.5,
+                borderColor: palette.goldLine,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>
+              <CheckIcon size={30} color={palette.gold} strokeWidth={2.2} />
+            </View>
+            <Text
+              style={{
+                fontFamily: Fonts.arabic,
+                fontSize: 30,
+                color: palette.primary,
+                marginTop: 16,
+                writingDirection: 'rtl',
+              }}>
+              مَا شَاءَ ٱللَّهُ
+            </Text>
+            <Text style={{ fontFamily: Fonts.display, fontSize: 20, color: palette.textPrimary, marginTop: 8 }}>
+              Congratulations!
+            </Text>
+            <Text
+              style={{
+                fontFamily: Fonts.body,
+                fontSize: 13.5,
+                color: palette.textSecondary,
+                textAlign: 'center',
+                marginTop: 6,
+                lineHeight: 20,
+              }}>
+              You completed Surah {surah.name} ({surah.arabic}) — all {surah.ayahCount} ayahs. May it stay
+              with you.
+            </Text>
+            {surahNo < 114 ? (
+              <Pressable
+                onPress={() => {
+                  setCelebrateOpen(false);
+                  resetAyah(1, surahNo + 1);
+                }}
+                style={{
+                  marginTop: 20,
+                  alignSelf: 'stretch',
+                  backgroundColor: palette.primary,
+                  borderRadius: Layout.radiusButton,
+                  paddingVertical: 14,
+                  alignItems: 'center',
+                }}>
+                <Text style={{ fontFamily: Fonts.display, fontSize: 15, color: '#FFFFFF' }}>
+                  Next surah · {getSurah(surahNo + 1).name}
+                </Text>
+              </Pressable>
+            ) : null}
+            <Pressable onPress={() => setCelebrateOpen(false)} style={{ marginTop: 12, padding: 6 }}>
+              <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 13, color: palette.textSecondary }}>
+                Stay here
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {/* Surah / ayah picker */}
       <Modal visible={pickerOpen} animationType="slide" transparent onRequestClose={() => setPickerOpen(false)}>

@@ -1,5 +1,6 @@
 /** Mistake Review — design handoff §3. Fed by the session store. */
-import { useMemo } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useMemo } from 'react';
 import { Text, View } from 'react-native';
 
 import { ClockIcon, PlayIcon } from '@/components/icons';
@@ -11,7 +12,13 @@ import { useSession, type MistakeEntry } from '@/store/session';
 
 export default function ReviewScreen() {
   const { palette } = useHujraTheme();
-  const { mistakes, stats } = useSession();
+  const { mistakes, stats, refresh } = useSession();
+
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+    }, [refresh]),
+  );
 
   const groups = useMemo(() => {
     const bySurah = new Map<number, MistakeEntry[]>();

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     # when ffmpeg is not on the server's PATH.
     ffmpeg_path: str = "ffmpeg"
     database_url: str = "postgresql://postgres:postgres@localhost:5432/postgres"
+    # Signs auth tokens - MUST be overridden with a long random value in .env.
+    jwt_secret: str = "dev-secret-change-me"
     # Skip HuggingFace network checks at startup; requires a warm model cache.
     hf_hub_offline: bool = False
     max_upload_bytes: int = 10 * 1024 * 1024

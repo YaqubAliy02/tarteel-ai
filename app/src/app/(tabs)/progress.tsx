@@ -2,27 +2,29 @@
  * Progress / Analytics — design handoff §4.
  * Aggregates are Phase 2 backend work; sample data mirrors the design.
  */
+import { useFocusEffect } from 'expo-router';
+import { useCallback } from 'react';
 import { Text, View } from 'react-native';
 
 import { Screen } from '@/components/screen';
 import { Fonts, Layout } from '@/constants/hujra';
 import { useHujraTheme } from '@/hooks/use-hujra-theme';
+import { getSurah } from '@/lib/quran';
 import { useSession } from '@/store/session';
 
-// Surah strength needs per-surah accuracy aggregation (Phase 2 polish);
-// sample rows from the design until then.
-const STRENGTH = [
-  { name: 'Al-Fatihah', arabic: 'الفاتحة', pct: 96, status: 'Strong' },
-  { name: 'Al-Ikhlas', arabic: 'الإخلاص', pct: 100, status: 'Strong' },
-  { name: 'Ar-Rahman', arabic: 'الرحمن', pct: 78, status: 'Needs work' },
-  { name: 'Al-Mulk', arabic: 'الملك', pct: 64, status: 'Needs work' },
-  { name: 'Ya-Sin', arabic: 'يس', pct: 41, status: 'Weak' },
-  { name: 'Al-Kahf', arabic: 'الكهف', pct: 27, status: 'Weak' },
-] as const;
+function strengthStatus(pct: number): 'Strong' | 'Needs work' | 'Weak' {
+  return pct >= 85 ? 'Strong' : pct >= 60 ? 'Needs work' : 'Weak';
+}
 
 export default function ProgressScreen() {
   const { palette } = useHujraTheme();
-  const { stats } = useSession();
+  const { stats, refresh } = useSession();
+
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+    }, [refresh]),
+  );
 
   // Real practice activity: 84 daily cells ending today, intensity 0-4.
   const counts = new Map((stats?.activity ?? []).map((a) => [a.day, a.count]));
@@ -37,6 +39,12 @@ export default function ProgressScreen() {
     const d = new Date(today);
     d.setDate(d.getDate() - (83 - offset));
     return d.toLocaleDateString('en-GB', { month: 'short' });
+  });
+
+  // Real per-surah strength from recitation history.
+  const strength = (stats?.surah_strength ?? []).map((s) => {
+    const meta = getSurah(s.surah);
+    return { name: meta.name, arabic: meta.arabic, pct: s.pct, status: strengthStatus(s.pct) };
   });
 
   const card = {
@@ -135,7 +143,12 @@ export default function ProgressScreen() {
         <Text style={{ fontFamily: Fonts.display, fontSize: 15.5, color: palette.textPrimary, marginBottom: 4 }}>
           Surah strength
         </Text>
-        {STRENGTH.map((s) => (
+        {strength.length === 0 ? (
+          <Text style={{ fontFamily: Fonts.body, fontSize: 12.5, color: palette.textSecondary, marginTop: 8 }}>
+            Recite in Memorize mode and each surah's strength will appear here.
+          </Text>
+        ) : null}
+        {strength.map((s) => (
           <View key={s.name} style={{ marginTop: 14 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <Text style={{ fontFamily: Fonts.display, fontSize: 14, color: palette.textPrimary }}>{s.name}</Text>

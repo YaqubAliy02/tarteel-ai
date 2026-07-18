@@ -19,7 +19,7 @@ export type Verdict = 'OK' | 'WRONG' | 'MISSING' | 'EXTRA' | 'PENDING';
 
 export type ProgressResponse = {
   continue: { surah: number; ayah: number } | null;
-  surahs: { surah: number; last_ayah: number; updated_at: string }[];
+  surahs: { surah: number; last_ayah: number; updated_at: string; completed: boolean }[];
 };
 
 export type ServerMistake = {
@@ -37,6 +37,7 @@ export type StatsResponse = {
   attempts: number;
   streak: number;
   activity: { day: string; count: number }[];
+  surah_strength: { surah: number; pct: number }[];
 };
 
 async function getJson<T>(path: string): Promise<T> {
@@ -54,6 +55,19 @@ async function getJson<T>(path: string): Promise<T> {
 export const getProgress = () => getJson<ProgressResponse>('/progress');
 export const getMistakes = () => getJson<{ mistakes: ServerMistake[] }>('/mistakes');
 export const getStats = () => getJson<StatsResponse>('/stats');
+
+async function postForm(path: string, fields: Record<string, string>): Promise<void> {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) form.append(key, value);
+  await fetch(`${API_BASE}${path}`, { method: 'POST', body: form });
+}
+
+/** Track navigation so "continue where you left off" follows the user. */
+export const postPosition = (surah: number, ayah: number) =>
+  postForm('/progress/position', { surah: String(surah), ayah: String(ayah) });
+
+export const postComplete = (surah: number, lastAyah: number) =>
+  postForm('/progress/complete', { surah: String(surah), last_ayah: String(lastAyah) });
 
 export type AnalyzeResponse = {
   expected_text: string;

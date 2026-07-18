@@ -7,7 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import logging
 
-from app import asr, db, quran_client
+from fastapi import Depends
+from pydantic import BaseModel
+
+from app import asr, auth, db, quran_client
 from app.config import settings
 from app.quran_client import QuranApiError, VerseNotFound
 from app.schemas import AnalyzeResponse
@@ -44,6 +47,53 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ---- auth -------------------------------------------------------------------
+
+
+class RegisterBody(BaseModel):
+    email: str
+    password: str
+    display_name: str = ""
+
+
+class LoginBody(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/auth/register")
+def register(body: RegisterBody):
+    email = body.email.strip().lower()
+    if "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(status_code=422, detail="enter a valid email address")
+    if len(body.password) < 8:
+        raise HTTPException(status_code=422, detail="password must be at least 8 characters")
+    if not db.is_connected():
+        raise HTTPException(status_code=503, detail="database unavailable")
+    try:
+        user = db.create_user(body.email, auth.hash_password(body.password), body.display_name)
+    except db.EmailTaken:
+        raise HTTPException(status_code=409, detail="an account with this email already exists")
+    return {"token": auth.create_token(user["id"]), "user": user}
+
+
+@app.post("/auth/login")
+def login(body: LoginBody):
+    user = db.get_user_by_email(body.email)
+    if not user or not auth.verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="wrong email or password")
+    public = {"id": user["id"], "email": user["email"], "display_name": user["display_name"]}
+    return {"token": auth.create_token(user["id"]), "user": public}
+
+
+@app.get("/auth/me")
+def me(user_id: int = Depends(auth.current_user_id)):
+    user = db.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="account no longer exists")
+    return user
 
 
 def _resolve_expected_text(
@@ -113,6 +163,7 @@ def analyze(
     surah: int | None = Form(None),
     ayah: int | None = Form(None),
     expected_text: str | None = Form(None),
+    user_id: int = Depends(auth.current_user_id),
 ):
     expected = _resolve_expected_text(surah, ayah, expected_text)
     _validate_audio_type(audio)
@@ -131,6 +182,7 @@ def analyze(
         try:
             expected_side = [(v, w, rw) for v, w, rw in report if v != "EXTRA"]
             db.record_attempt(
+                user_id,
                 surah,
                 ayah,
                 ok_words=sum(1 for v, _, _ in expected_side if v == "OK"),
@@ -161,6 +213,7 @@ def analyze_partial(
     surah: int | None = Form(None),
     ayah: int | None = Form(None),
     expected_text: str | None = Form(None),
+    user_id: int = Depends(auth.current_user_id),
 ):
     expected = _resolve_expected_text(surah, ayah, expected_text)
     _validate_audio_type(audio)
@@ -179,8 +232,14 @@ def analyze_partial(
         if trailing and verdict == "MISSING":
             report.append(("PENDING", word, None))
         elif verdict not in ("MISSING", "EXTRA") or not trailing:
+            if trailing and verdict == "WRONG":
+                # The word at the recitation frontier is usually only half
+                # spoken when the snapshot was taken — don't flash it red;
+                # the final (complete-audio) analysis is authoritative.
+                report.append(("PENDING", word, None))
+            else:
+                report.append((verdict, word, recited))
             trailing = False
-            report.append((verdict, word, recited))
         else:  # EXTRA while still trailing: often the half-spoken current word
             report.append((verdict, word, recited))
     report.reverse()
@@ -192,16 +251,44 @@ def analyze_partial(
     }
 
 
+def _validate_surah_ayah(surah: int, ayah: int) -> None:
+    if not (1 <= surah <= 114) or ayah < 1:
+        raise HTTPException(status_code=422, detail=f"invalid position {surah}:{ayah}")
+
+
+@app.post("/progress/position")
+def set_position(
+    surah: int = Form(...),
+    ayah: int = Form(...),
+    user_id: int = Depends(auth.current_user_id),
+):
+    """Track navigation so 'continue where you left off' follows the user."""
+    _validate_surah_ayah(surah, ayah)
+    db.set_position(user_id, surah, ayah)
+    return {"ok": True}
+
+
+@app.post("/progress/complete")
+def complete_surah(
+    surah: int = Form(...),
+    last_ayah: int = Form(...),
+    user_id: int = Depends(auth.current_user_id),
+):
+    _validate_surah_ayah(surah, last_ayah)
+    db.mark_completed(user_id, surah, last_ayah)
+    return {"ok": True}
+
+
 @app.get("/progress")
-def progress():
-    return db.get_progress()
+def progress(user_id: int = Depends(auth.current_user_id)):
+    return db.get_progress(user_id)
 
 
 @app.get("/mistakes")
-def mistakes(limit: int = 200):
-    return {"mistakes": db.get_mistakes(min(max(limit, 1), 1000))}
+def mistakes(limit: int = 200, user_id: int = Depends(auth.current_user_id)):
+    return {"mistakes": db.get_mistakes(user_id, min(max(limit, 1), 1000))}
 
 
 @app.get("/stats")
-def stats():
-    return db.get_stats()
+def stats(user_id: int = Depends(auth.current_user_id)):
+    return db.get_stats(user_id)

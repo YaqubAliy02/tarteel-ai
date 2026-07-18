@@ -1,4 +1,5 @@
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import {
@@ -19,7 +20,14 @@ const DAILY_GOAL = 12; // verses/day; becomes user-configurable with Goal sync
 
 export default function HomeScreen() {
   const { palette, isDark } = useHujraTheme();
-  const { mistakes, stats, progress } = useSession();
+  const { mistakes, stats, progress, refresh } = useSession();
+
+  // Always show the latest position/stats when the user lands on Home.
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+    }, [refresh]),
+  );
 
   const todayIso = new Date().toISOString().slice(0, 10);
   const doneToday = stats?.activity.find((a) => a.day === todayIso)?.count ?? 0;
