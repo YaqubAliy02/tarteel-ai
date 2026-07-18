@@ -9,7 +9,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://REPLACE-WITH-YOUR-SERVER-URL"
+        "EXPO_PUBLIC_API_URL": "http://10.248.235.6:8000"
       }
     },
     "production": {

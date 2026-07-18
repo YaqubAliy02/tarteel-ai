@@ -1,0 +1,38 @@
+# One-command backend deployment for a VPS:
+#   JWT_SECRET=$(openssl rand -base64 48) docker compose up -d --build
+# Then put a reverse proxy with HTTPS in front of port 8000
+# (e.g. Caddy: `caddy reverse-proxy --from api.yourdomain.com --to localhost:8000`).
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to a long random string}
+      FFMPEG_PATH: ffmpeg
+      ASR_DEVICE: "-1"
+      CORS_ALLOW_ORIGINS: "*"
+    volumes:
+      - hf-cache:/srv/hujra/.hf-cache
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  hf-cache:
+  pgdata:

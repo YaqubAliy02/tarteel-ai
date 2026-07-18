@@ -966,25 +966,26 @@ export default function MemorizeScreen() {
               You completed Surah {surah.name} ({surah.arabic}) — all {surah.ayahCount} ayahs. May it stay
               with you.
             </Text>
-            {surahNo < 114 ? (
-              <Pressable
-                onPress={() => {
-                  setCelebrateOpen(false);
-                  resetAyah(1, surahNo + 1);
-                }}
-                style={{
-                  marginTop: 20,
-                  alignSelf: 'stretch',
-                  backgroundColor: palette.primary,
-                  borderRadius: Layout.radiusButton,
-                  paddingVertical: 14,
-                  alignItems: 'center',
-                }}>
-                <Text style={{ fontFamily: Fonts.display, fontSize: 15, color: '#FFFFFF' }}>
-                  Next surah · {getSurah(surahNo + 1).name}
-                </Text>
-              </Pressable>
-            ) : null}
+            <Pressable
+              onPress={() => {
+                setCelebrateOpen(false);
+                // After An-Nas (114) the journey wraps back to Al-Fatihah.
+                resetAyah(1, surahNo < 114 ? surahNo + 1 : 1);
+              }}
+              style={{
+                marginTop: 20,
+                alignSelf: 'stretch',
+                backgroundColor: palette.primary,
+                borderRadius: Layout.radiusButton,
+                paddingVertical: 14,
+                alignItems: 'center',
+              }}>
+              <Text style={{ fontFamily: Fonts.display, fontSize: 15, color: '#FFFFFF' }}>
+                {surahNo < 114
+                  ? `Next surah · ${getSurah(surahNo + 1).name}`
+                  : 'Start again · Al-Fatihah'}
+              </Text>
+            </Pressable>
             <Pressable onPress={() => setCelebrateOpen(false)} style={{ marginTop: 12, padding: 6 }}>
               <Text style={{ fontFamily: Fonts.bodySemiBold, fontSize: 13, color: palette.textSecondary }}>
                 Stay here
